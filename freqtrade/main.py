@@ -7,6 +7,7 @@ import time
 import traceback
 from datetime import datetime
 from typing import Dict, List, Optional, Any
+from freqtrade.rpc.tradingview import trend_follower
 
 import arrow
 import requests
@@ -307,6 +308,20 @@ def min_roi_reached(trade: Trade, current_rate: float, current_time: datetime) -
     return False
 
 
+def _on_trend_signal(trade: Trade) -> float:
+    trend = trend_follower()
+    if trend < 0:
+        return "forcesell"
+    elif trend > 0 and trend <= 2:
+        return "wtp"
+    elif trend > 2 and trend <= 5:
+        return "min_roi"
+    elif trend > 5 and trend <= 7:
+        return "trade"
+    else:
+        return "hold"
+
+
 def handle_trade(trade: Trade, interval: int) -> bool:
     """
     Sells the current pair if the threshold is reached and updates the trade record.
@@ -322,6 +337,21 @@ def handle_trade(trade: Trade, interval: int) -> bool:
 
     if _CONF.get('experimental', {}).get('use_sell_signal'):
         (buy, sell) = get_signal(trade.pair, interval)
+
+    # trade based on trend signal
+    if _CONF.get('experimental', {}).get('sell_on_trend_signal', False):
+        trend = _on_trend_signal()
+        if trend == "forcesell":
+            logger.debug('Executing sell due to sell_on_trend_signal: forcesell ...')
+            execute_sell(trade, current_rate)
+            return True
+        elif trend == "wtp" and trade.calc_profit(rate=current_rate) > 0:
+            logger.debug('Executing sell due to sell_on_trend_signal: wtp ...')
+            execute_sell(trade, current_rate)
+            return True
+        elif trend == "hold":
+            logger.debug('Holding based on sell_on_trend_signal: hold ...')
+            return False
 
     # Check if minimal roi has been reached and no longer in buy conditions (avoiding a fee)
     if not buy and min_roi_reached(trade, current_rate, datetime.utcnow()):
